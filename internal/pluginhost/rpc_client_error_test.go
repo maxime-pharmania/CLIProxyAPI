@@ -44,6 +44,99 @@ func TestDecodeEnvelopeResultPreservesPluginHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestDecodeEnvelopeResultEnrichesEmptyPluginErrorMessage(t *testing.T) {
+	_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{
+		OK: false,
+		Error: &pluginabi.Error{
+			Code:       "unsupported",
+			HTTPStatus: http.StatusBadRequest,
+		},
+	})
+	if errDecode == nil {
+		t.Fatal("decodeEnvelopeResult returned nil error")
+	}
+	if got, want := errDecode.Error(), "plugin call failed (code=unsupported, http=400)"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	rpcErr, ok := errDecode.(rpcError)
+	if !ok {
+		t.Fatalf("error %T is not rpcError", errDecode)
+	}
+	if rpcErr.Code != "unsupported" {
+		t.Fatalf("code = %q, want unsupported", rpcErr.Code)
+	}
+	if got := rpcErr.StatusCode(); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func TestDecodeEnvelopeResultOmitsEmptyPartsInEnrichedMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		code   string
+		status int
+		want   string
+	}{
+		{name: "code only", code: "unsupported", status: 0, want: "plugin call failed (code=unsupported)"},
+		{name: "status only", code: "", status: http.StatusBadGateway, want: "plugin call failed (http=502)"},
+		{name: "no code no status", code: "", status: 0, want: "plugin call failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{
+				OK:    false,
+				Error: &pluginabi.Error{Code: tc.code, HTTPStatus: tc.status},
+			})
+			if errDecode == nil {
+				t.Fatal("decodeEnvelopeResult returned nil error")
+			}
+			if got := errDecode.Error(); got != tc.want {
+				t.Fatalf("error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeEnvelopeResultKeepsNonEmptyPluginMessage(t *testing.T) {
+	_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{
+		OK: false,
+		Error: &pluginabi.Error{
+			Code:       "plugin_error",
+			Message:    "license required",
+			HTTPStatus: http.StatusForbidden,
+		},
+	})
+	if errDecode == nil {
+		t.Fatal("decodeEnvelopeResult returned nil error")
+	}
+	if got := errDecode.Error(); got != "license required" {
+		t.Fatalf("error = %q, want license required", got)
+	}
+	rpcErr, ok := errDecode.(rpcError)
+	if !ok {
+		t.Fatalf("error %T is not rpcError", errDecode)
+	}
+	if rpcErr.Code != "plugin_error" {
+		t.Fatalf("code = %q, want plugin_error", rpcErr.Code)
+	}
+	if got := rpcErr.StatusCode(); got != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", got, http.StatusForbidden)
+	}
+}
+
+func TestDecodeEnvelopeResultWithoutErrorEnvelope(t *testing.T) {
+	_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{OK: false})
+	if errDecode == nil {
+		t.Fatal("decodeEnvelopeResult returned nil error")
+	}
+	if got := errDecode.Error(); got != "plugin call failed" {
+		t.Fatalf("error = %q, want plugin call failed", got)
+	}
+	if _, ok := errDecode.(rpcError); ok {
+		t.Fatalf("error %T should not be rpcError without an error envelope", errDecode)
+	}
+}
+
 func TestCallPluginReturnsPluginErrorWithoutMethodWrapper(t *testing.T) {
 	raw, errMarshal := json.Marshal(pluginabi.Envelope{
 		OK: false,

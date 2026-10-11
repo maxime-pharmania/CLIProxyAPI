@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -357,17 +358,35 @@ func isPluginErrorEnvelope(raw []byte) bool {
 	return !envelope.OK && envelope.Error != nil
 }
 
+// pluginErrorMessage keeps a plugin failure diagnosable when the plugin returns an
+// empty message: the machine-readable code and HTTP status are surfaced instead, so
+// operators and clients still get an actionable error.
+func pluginErrorMessage(pluginErr *pluginabi.Error) string {
+	if message := strings.TrimSpace(pluginErr.Message); message != "" {
+		return message
+	}
+	parts := make([]string, 0, 2)
+	if code := strings.TrimSpace(pluginErr.Code); code != "" {
+		parts = append(parts, "code="+code)
+	}
+	if pluginErr.HTTPStatus != 0 {
+		parts = append(parts, "http="+strconv.Itoa(pluginErr.HTTPStatus))
+	}
+	if len(parts) == 0 {
+		return "plugin call failed"
+	}
+	return "plugin call failed (" + strings.Join(parts, ", ") + ")"
+}
+
 func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 	var zero T
 	if !envelope.OK {
 		if envelope.Error != nil {
-			message := strings.TrimSpace(envelope.Error.Message)
-			if message == "" {
-				message = "plugin call failed"
-			}
+			log.Debugf("pluginhost: plugin error envelope: code=%q http=%d message_empty=%t result_bytes=%d",
+				strings.TrimSpace(envelope.Error.Code), envelope.Error.HTTPStatus, strings.TrimSpace(envelope.Error.Message) == "", len(envelope.Result))
 			return zero, rpcError{
 				Code:       strings.TrimSpace(envelope.Error.Code),
-				message:    message,
+				message:    pluginErrorMessage(envelope.Error),
 				statusCode: envelope.Error.HTTPStatus,
 			}
 		}
